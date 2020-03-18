@@ -39,6 +39,16 @@ namespace SoapCore.Tests.Wsdl
 		}
 
 		[TestMethod]
+		public void CheckReturnService()
+		{
+			StartService(typeof(RequiredService));
+			var wsdl = GetWsdl();
+			Trace.TraceInformation(wsdl);
+			Assert.IsNotNull(wsdl);
+			StopServer();
+		}
+
+		[TestMethod]
 		public void CheckDataContractContainsItself()
 		{
 			StartService(typeof(DataContractContainsItselfService));

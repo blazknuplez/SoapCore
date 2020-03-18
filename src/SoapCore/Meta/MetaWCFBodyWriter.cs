@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 using System.Data;
 using System.IO;
 using System.Linq;
@@ -175,7 +176,13 @@ namespace SoapCore.Meta
 				var parameterName = !string.IsNullOrEmpty(elementAttribute?.ElementName)
 										? elementAttribute.ElementName
 										: parameterInfo.Parameter.GetCustomAttribute<MessageParameterAttribute>()?.Name ?? parameterInfo.Parameter.Name;
-				AddSchemaType(writer, parameterInfo.Parameter.ParameterType, parameterName, objectNamespace: elementAttribute?.Namespace ?? (parameterInfo.Namespace != "http://tempuri.org/" ? parameterInfo.Namespace : null));
+
+				// parameters are always required
+				AddSchemaType(writer,
+					parameterInfo.Parameter.ParameterType,
+					parameterName,
+					objectNamespace: elementAttribute?.Namespace ?? (parameterInfo.Namespace != "http://tempuri.org/" ? parameterInfo.Namespace : null),
+					isRequired: true);
 			}
 		}
 
@@ -273,7 +280,7 @@ namespace SoapCore.Meta
 					}
 
 					var returnName = operation.DispatchMethod.ReturnParameter.GetCustomAttribute<MessageParameterAttribute>()?.Name ?? operation.Name + "Result";
-					AddSchemaType(writer, returnType, returnName, false, GetDataContractNamespace(returnType));
+					AddSchemaType(writer, returnType, returnName, false, GetDataContractNamespace(returnType), true);
 				}
 
 				WriteParameters(writer, operation.OutParameters);
@@ -781,7 +788,7 @@ namespace SoapCore.Meta
 					elementName = collectionDataContractAttribute.ItemName;
 				}
 
-				AddSchemaType(writer, elementType, elementName, true, GetDataContractNamespace(type));
+				AddSchemaType(writer, elementType, elementName, true, GetDataContractNamespace(type), true);
 			}
 			else
 			{
@@ -821,13 +828,14 @@ namespace SoapCore.Meta
 					{
 						Name = propertyName,
 						Type = property.PropertyType,
-						Order = order
+						Order = order,
+						Required = attributes.Any(i => i is RequiredAttribute)
 					});
 				}
 
 				foreach (var p in dataMembersToWrite.OrderBy(x => x.Order).ThenBy(p => p.Name, StringComparer.Ordinal))
 				{
-					AddSchemaType(writer, p.Type, p.Name, false, GetDataContractNamespace(p.Type));
+					AddSchemaType(writer, p.Type, p.Name, false, GetDataContractNamespace(p.Type), p.Required);
 				}
 			}
 
@@ -1003,7 +1011,7 @@ namespace SoapCore.Meta
 			writer.WriteEndElement(); // wsdl:port
 		}
 
-		private void AddSchemaType(XmlDictionaryWriter writer, Type type, string name, bool isArray = false, string objectNamespace = null)
+		private void AddSchemaType(XmlDictionaryWriter writer, Type type, string name, bool isArray = false, string objectNamespace = null, bool isRequired = true)
 		{
 			var typeInfo = type.GetTypeInfo();
 			var typeName = GetTypeName(type);
@@ -1027,7 +1035,7 @@ namespace SoapCore.Meta
 
 			if (typeInfo.IsEnum || Nullable.GetUnderlyingType(typeInfo)?.IsEnum == true)
 			{
-				WriteComplexElementType(writer, typeName, _schemaNamespace, objectNamespace, type);
+				WriteComplexElementType(writer, typeName, _schemaNamespace, objectNamespace, type, isRequired);
 
 				if (string.IsNullOrEmpty(name))
 				{
@@ -1038,7 +1046,11 @@ namespace SoapCore.Meta
 
 				if (isArray)
 				{
-					writer.WriteAttributeString("minOccurs", "0");
+					if (isRequired)
+					{
+						writer.WriteAttributeString("minOccurs", "0");
+					}
+
 					writer.WriteAttributeString("maxOccurs", "unbounded");
 				}
 			}
@@ -1065,7 +1077,11 @@ namespace SoapCore.Meta
 					{
 						var sysType = ResolveSystemType(underlyingType);
 						xsTypename = $"{(sysType.ns == Namespaces.SERIALIZATION_NS ? "ser" : "xs")}:{sysType.name}";
-						writer.WriteAttributeString("nillable", "true");
+
+						if (!isRequired)
+						{
+							writer.WriteAttributeString("nillable", "true");
+						}
 					}
 					else if (ResolveSystemType(type).name != null)
 					{
@@ -1078,9 +1094,17 @@ namespace SoapCore.Meta
 					}
 				}
 
-				writer.WriteAttributeString("minOccurs", "0");
 				if (isArray)
 				{
+					if (isRequired)
+					{
+						writer.WriteAttributeString("minOccurs", "1");
+					}
+					else
+					{
+						writer.WriteAttributeString("minOccurs", "0");
+					}
+
 					writer.WriteAttributeString("maxOccurs", "unbounded");
 				}
 
@@ -1094,9 +1118,18 @@ namespace SoapCore.Meta
 			}
 			else
 			{
-				writer.WriteAttributeString("minOccurs", "0");
+				if (!isRequired)
+				{
+					writer.WriteAttributeString("minOccurs", "0");
+				}
+
 				if (isArray)
 				{
+					if (isRequired)
+					{
+						writer.WriteAttributeString("minOccurs", "1");
+					}
+
 					writer.WriteAttributeString("maxOccurs", "unbounded");
 				}
 
@@ -1108,7 +1141,12 @@ namespace SoapCore.Meta
 					}
 
 					writer.WriteAttributeString("name", name);
-					writer.WriteAttributeString("nillable", "true");
+
+					if (!isRequired)
+					{
+						writer.WriteAttributeString("nillable", "true");
+					}
+
 					writer.WriteAttributeString("type", "xs:string");
 				}
 				else if (type.Name == "Object" || type.Name == "Object&")
@@ -1190,9 +1228,13 @@ namespace SoapCore.Meta
 
 						writer.WriteXmlnsAttribute($"{ns}", Namespaces.ARRAYS_NS);
 						writer.WriteAttributeString("name", name);
-						writer.WriteAttributeString("nillable", "true");
+
+						if (!isRequired)
+						{
+							writer.WriteAttributeString("nillable", "true");
+						}
 						writer.WriteAttributeString("type", $"{ns}:ArrayOf{sysType.name}");
-						
+
 						_arrayToBuild.Enqueue(type);
 					}
 					else
@@ -1203,7 +1245,7 @@ namespace SoapCore.Meta
 						}
 
 						writer.WriteAttributeString("name", name);
-						WriteComplexElementType(writer, typeName, _schemaNamespace, objectNamespace, type);
+						WriteComplexElementType(writer, typeName, _schemaNamespace, objectNamespace, type, isRequired);
 						_complexTypeToBuild[type] = GetDataContractNamespace(type);
 					}
 				}
@@ -1215,7 +1257,7 @@ namespace SoapCore.Meta
 					}
 
 					writer.WriteAttributeString("name", name);
-					WriteComplexElementType(writer, typeName, _schemaNamespace, objectNamespace, type);
+					WriteComplexElementType(writer, typeName, _schemaNamespace, objectNamespace, type, isRequired);
 					_complexTypeToBuild[type] = GetDataContractNamespace(type);
 				}
 			}
@@ -1278,10 +1320,10 @@ namespace SoapCore.Meta
 			return true;
 		}
 
-		private void WriteComplexElementType(XmlDictionaryWriter writer, string typeName, string schemaNamespace, string objectNamespace, Type type)
+		private void WriteComplexElementType(XmlDictionaryWriter writer, string typeName, string schemaNamespace, string objectNamespace, Type type, bool isRequired = true)
 		{
 			var underlying = Nullable.GetUnderlyingType(type);
-			if (!type.IsEnum || underlying != null)
+			if ((!type.IsEnum || underlying != null) && !isRequired)
 			{
 				writer.WriteAttributeString("nillable", "true");
 			}
